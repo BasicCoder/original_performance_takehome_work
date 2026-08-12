@@ -43,12 +43,12 @@ The current workspace source of truth is `perf_takehome.py`:
 
 | Metric | Value |
 | --- | ---: |
-| Frozen-shape cycles | **991** |
-| Emitted/scheduled IR operations | **12048 / 12048** |
+| Frozen-shape cycles | **983** |
+| Emitted/scheduled IR operations | **12045 / 12045** |
 | Baseline | 147734 |
-| Speedup | **149.08x** |
-| Scratch | **1524 / 1536 words** |
-| Spare scratch | 12 words |
+| Speedup | **150.29x** |
+| Scratch | **1523 / 1536 words** |
+| Spare scratch | 13 words |
 
 The specialized kernel is selected only for `(10, 2047, 256, 16)`. Other
 shapes use the scalar fallback.
@@ -57,24 +57,26 @@ The official suite currently passes:
 
 ```text
 /bin/python3 tests/submission_tests.py
-Ran 9 tests in 3.599s
+Ran 9 tests in 3.398s
 OK
-CYCLES: 991 on all nine executions
+CYCLES: 983 on all nine executions
 ```
 
-This 991-cycle checkpoint was reproduced after moving to a new machine. Its
-exact 999-to-991 experiment history is being reconstructed from the prior VS
-Code Copilot session store; until that provenance is fully recovered, the
-workspace code and frozen-suite result are authoritative.
+The prior VS Code Copilot session store was searched after moving machines. It
+preserved the full path through the integrated 999-cycle checkpoint and a later
+status report for 991, but not the disposable `/tmp` artifacts from the old
+machine. The 991 workspace state was independently reproduced before starting
+new experiments: 12048/12048 operations, 1524 scratch words, and all nine
+official tests passing.
 
-Additional fresh-process validation on 2026-08-11:
+Additional fresh-process validation on 2026-08-12:
 
 ```text
-seeds: 1, 2, 3, 7, 42, 123, 999, 20260811
-cycles: 999 for every seed
+seeds: 1, 2, 3, 7, 42, 123, 999, 20260811, 20260812
+cycles: 983 for every seed
 correct: true for every seed
-ops: 12051 complete
-peak scratch: 1521 / 1536
+ops: 12045 complete
+peak scratch: 1523 / 1536
 
 git diff --exit-code origin/main -- tests/ problem.py
 git diff --check
@@ -118,8 +120,8 @@ Validation level as of 2026-08-11:
 - The schedule ran correctly in `tests/frozen_problem.py` for the frozen shape
 	and seed 123.
 - The result was reproduced in a fresh Python process at 1004 cycles.
-- This 1004 result has now been superseded by the integrated 999-cycle
-	workspace kernel.
+- This 1004 result was superseded first by the integrated 999-cycle kernel and
+	then by the current 983-cycle workspace kernel.
 
 The exact experimental architecture is:
 
@@ -199,6 +201,57 @@ import OR-Tools, Z3, MCP components, `/tmp` modules, or search helpers. MCP was
 not needed for implementation or validation; one subagent's MCP wait was an
 incorrect tool-routing choice and was bypassed in favor of local execution.
 
+### 2.3 Decisive 983-cycle change
+
+The 2026-08-12 search started from the frozen-correct 991 checkpoint. Its tail
+was load-saturated through cycle 980, after which group 29's final hash and
+store completed at cycle 990. Scheduler-only priority changes merely moved this
+tail between groups 29 and 31.
+
+The winning change modifies the earlier round-4 depth-4 lookup shape instead:
+
+```text
+round-4 vselect groups added: 16, 26, 29
+round-4 reversed-bit groups:  16, 26, 29
+existing round-15 reversal:   group 3
+physical group-order swap:    positions holding groups 5 and 25
+```
+
+Exact retained configuration:
+
+```text
+round-4 vselect mask:
+{0, 1, 3, 11, 12, 13, 15, 16, 18, 21, 22, 24, 25, 26, 27, 28, 29, 30}
+
+round-15 vselect mask:
+{0, 1, 3, 11, 14, 18, 19, 21, 22, 24, 25, 26}
+
+round/depth bit reversals:
+{(4, 16), (4, 26), (4, 29), (15, 3)}
+
+logical-to-physical group order:
+(0, 1, 2, 3, 4, 25, 6, 10,
+ 8, 9, 7, 11, 12, 13, 26, 15,
+ 16, 17, 18, 19, 20, 21, 22, 23,
+ 24, 5, 14, 27, 28, 29, 30, 31)
+```
+
+Measured progression from the same 991 baseline:
+
+```text
+988  add round-4 lookup group 16 alone
+988  add round-4 lookup group 26 alone
+986  add round-4 lookup groups 16, 26, and 29
+985  also reverse those three groups' bit order
+983  additionally swap physical groups 5 and 25 in emission order
+```
+
+The three extra lookups remove 24 scalar loads. Reversing their lookup bit
+order lets each lookup start from its earliest retained branch bit, while the
+group-order swap changes which physical work occupies the two-wave schedule's
+critical contexts. The final load now occurs at cycle 971, final VALU at 979,
+and final store at 982.
+
 ## 3. Active architecture
 
 ### 3.1 SIMD and tiling
@@ -239,9 +292,9 @@ before XOR with the gathered node. Final output is decoded before store.
 	bits.
 - Depths 4-10 normally use scalar gather: eight ALU address operations, eight
 	scalar loads, and scalar XORs that can overlap with vector hash work.
-- On the final depth-4 round, 26 vectors use a 16-entry table lookup and 6
-	vectors use direct gather. This removes 208 scalar loads while keeping the
-	flow tail manageable.
+- On round 4, 18 vectors use the 16-entry table and 14 use direct gather. On
+	round 15, 12 vectors use the table and 20 use direct gather. The asymmetric
+	assignment balances saved loads against VALU/flow pressure.
 - The final table uses base/difference pairs. `multiply_add` evaluates the pair
 	leaves, then a small `vselect` tree chooses the result.
 
@@ -321,22 +374,24 @@ Practical conclusion: a legitimate 900-cycle design most likely needs both:
 2. A factorized lookup that removes at least 14 gather groups without adding a
 	 comparable VALU/ALU/flow cost.
 
-### 4.1 Current 991 roofline
+### 4.1 Current 983 roofline
 
 The integrated scratch-aware SSA compiler has these exact slot totals:
 
 ```text
-load   1887 slots, floor 944
-VALU   5838 slots, floor 973
-ALU   11649 slots, floor 971
-flow    812 slots, floor 812
+load   1863 slots, floor 932
+VALU   5843 slots, floor 974
+ALU   11585 slots, floor 966
+flow    857 slots, floor 857
 store    38 slots, floor 19
-maximum hard floor: 973 cycles
+maximum hard floor: 974 cycles
 ```
 
-The remaining 18-cycle gap above the aggregate floor comes from dependency and
-scratch-liveness shape, not raw engine capacity. Reaching 900 still requires
-structural work; scheduler weights alone are unlikely to close that gap.
+The remaining 9-cycle gap above the aggregate floor is now primarily the final
+round's VALU dependency chains plus four cycles of dependent store drain. The
+new lookup policy deliberately trades flow headroom for fewer loads; VALU is
+the hard resource floor. Reaching 900 still requires structural work rather
+than scheduler weights alone.
 
 ## 5. Optimization progression
 
@@ -379,9 +434,13 @@ Disposable scratch-aware compiler checkpoints:
 1006  joint random scheduler-parameter search
 1004  lower ALU critical-path weight from 0.125 to 0.05
 	 999  share depth-4 lookup vectors with C6 memory preencoding
+	 991  recovered workspace checkpoint; nine tests passed
+	 986  add round-4 lookup groups 16, 26, and 29
+	 985  reverse the three new round-4 lookup paths
+	 983  swap physical groups 5 and 25; nine tests passed
 ```
 
-The 999 result is integrated in the workspace and passes the full official
+The 983 result is integrated in the workspace and passes the full official
 suite.
 
 The main retained improvements are:
@@ -395,7 +454,7 @@ The main retained improvements are:
 - Cached depth-0 through depth-3 tree nodes.
 - Scalar deep gather overlapped with vector hash work.
 - 20-context tiling.
-- Selective final depth-4 lookup for 26 of 32 vectors.
+- Asymmetric round-4 and round-15 depth-4 lookup assignment.
 - Resource-aware dependency scheduling.
 
 ## 6. Measured experiments and dead ends
@@ -523,6 +582,9 @@ Retained mechanisms:
 | Per-group lookup bit reversal | Global reversal regressed, but reversing only groups 3 and 26 improved 1010 to 1009. |
 | Group/round/engine-specific priorities | Combined with offload and allocation order, these moved the same IR from 1021 to 1006. |
 | Shared depth-4 lookup/preencoding vectors | Reused two lookup loads and encoded vectors for memory preencoding; produced the final validated 999-cycle kernel. |
+| Earlier round-4 lookup expansion | Adding groups 16, 26, and 29 removed 24 late-contending loads and improved 991 to 986. |
+| Per-group early-bit lookup start | Reversing only the three new round-4 lookup paths improved the new schedule to 985. |
+| Context-to-physical-group reassignment | Swapping physical groups 5 and 25 improved 985 to the validated 983 checkpoint. |
 
 Important measured dead ends or neutral results:
 
@@ -539,7 +601,7 @@ Important measured dead ends or neutral results:
 | Full hash stage moved to lane ALU | Correct but longer due to allocation and lane-completion dependencies. |
 | Vector scatter only for final groups | Did not beat scalar lane XOR on the best scheduler phase. |
 | Add group 29 as a twelfth final lookup | Regressed the 1004 phase to 1010 despite shortening group 29's gather path. |
-| Explicit physical group permutation | Single swaps did not beat the logical identity order. |
+| Explicit physical group permutation on the old IR | Single swaps did not beat the old schedule, but became useful after the 2026-08-12 lookup-shape change. |
 | Runtime priority recomputation sweep | After fixing a default-argument binding bug, intervals 0-1000 still did not beat 1004. |
 | Conservative physical rescheduler | Correct but produced 1052 cycles, worse than the online SSA scheduler. |
 | Physical-DAG CP-SAT at 999 | Presolve proved this particular 1014 physical allocation infeasible; this is not a proof against other SSA allocations. |
@@ -548,6 +610,38 @@ Important measured dead ends or neutral results:
 The current evidence is that aggregate resource work is already sufficient for
 sub-1000. The remaining blocker is the interaction among allocation order,
 dynamic offload, final lookup assignment, and the final-round hash tail.
+
+### 6.7 Parallel 991-to-983 search on 2026-08-12
+
+Five GPT-5.6 Sol subagents independently studied the scheduler tail,
+lookup/release masks, allocator/offload policy, structural operation savings,
+and checkpoint provenance. All experiments were read-only or disposable until
+the winning constants were promoted.
+
+The depth-4 search evaluated 3199 focused configurations:
+
+```text
+complete schedules:          2977
+rejected STUCK schedules:     222
+complete candidates <= 986:   336
+frozen validation:              4 seeds for every <=986 candidate
+best promoted result:          983
+```
+
+Important controls and negative results:
+
+- Every candidate was ranked only after emitted and scheduled operation counts
+	matched and scratch stayed at or below 1536.
+- Truncated schedules as low as 782-956 cycles completed only 9414-10569
+	operations and were rejected.
+- Broad cutoff, recomputation, engine-cost, allocator, offload-family, and
+	targeted-priority sweeps did not improve the original 991 IR.
+- Prioritizing group 29 moved it earlier but transferred the final tail to
+	group 31, leaving 991 unchanged.
+- Replacing seven early final-round MADD lookup leaves with equivalent
+	`vselect` leaves reduced the hard floor by one cycle but left makespan at 991.
+- The winning result therefore came from changing earlier load demand and
+	context assignment, not another scheduler-weight search.
 
 ## 7. Public comparison and independently reproduced results
 
@@ -628,14 +722,14 @@ not another priority constant sweep.
 
 ## 8. Prioritized next directions
 
-### Immediate P0: continue from 999 toward 900
+### Immediate P0: continue from 983 toward 900
 
-1. Preserve the 999 checkpoint before any further search.
+1. Preserve the validated 983 checkpoint before any further search.
 2. Revisit shared preencoding for depth 6 without duplicating loads or vectors;
 	the successful depth-4 change shows that sharing, not preencoding alone, is
 	the useful abstraction.
-3. Target the 27-cycle gap above the 972 resource floor with final-round
-	allocation and liveness changes rather than broad priority sweeps.
+3. Target the 9-cycle gap above the 974 resource floor with final-round VALU
+	chain and dependent-store changes rather than broad priority sweeps.
 4. Continue nine-operation hash synthesis as the main route toward 900.
 5. Rerun the complete promotion checklist after every workspace change.
 
@@ -701,7 +795,7 @@ Required invariants:
 - Full operation-count completion checks.
 - Offline live-interval validation against 1536 words.
 
-This compiler direction is now integrated in the 999 workspace implementation;
+This compiler direction is now integrated in the 983 workspace implementation;
 future changes must preserve the invariants above.
 
 ### P1: Shorten the final lookup tail
@@ -773,8 +867,8 @@ These are not runtime dependencies and must not be included in a submission.
 
 Current source of truth:
 
-- `perf_takehome.py`: integrated 999-cycle implementation.
-- `OPTIMIZATION.md`: this research/state log, including 999 validation.
+- `perf_takehome.py`: integrated 983-cycle implementation.
+- `OPTIMIZATION.md`: this research/state log, including 983 validation.
 - `tests/`: unchanged upstream frozen tests.
 
 ## 11. Validation commands
@@ -810,7 +904,6 @@ for bundle in kb.instrs:
 		for engine, entries in bundle.items():
 				slots[engine] += len(entries)
 print("cycles", len(kb.instrs))
-print("scratch", kb.scratch_ptr)
 print("slots", dict(slots))
 print(
 		"floors",
@@ -822,9 +915,13 @@ print(
 PY
 ```
 
+The scheduler's normal build output reports peak scratch usage. The old
+diagnostic attempted to read `kb.scratch_ptr`, which does not exist for the
+dynamic allocator and has been removed from this command.
+
 ## 12. Promotion checklist
 
-The integrated 999 checkpoint satisfies all of the following:
+The integrated 983 checkpoint satisfies all of the following:
 
 1. The scheduler emitted every operation and did not print `STUCK`.
 2. The focused frozen-shape test is correct and strictly faster.
