@@ -330,6 +330,10 @@ GROUP_ROUND_ENGINE_PRIORITY_BONUS: dict[tuple[str, int, int], float] = {
         ("valu", -0.10),
     )
 }
+OP_PRIORITY_BONUS_BY_ID: dict[str, float] = {
+    "g26_r15_hash5_combine": 15.0,
+    "g27_r15_hash5_combine": 15.0,
+}
 
 # Optional scheduler telemetry output (disabled by default).
 # Set SCHED_TELEMETRY_PATH to a .csv or .jsonl path to enable.
@@ -1039,7 +1043,7 @@ class Scheduler:
         emit_scale = EMIT_ORDER_SCALE / max(n, 1)
         self.priority = []
         for i in range(n):
-            targeted_bonus = 0.0
+            targeted_bonus = OP_PRIORITY_BONUS_BY_ID.get(ops[i].id, 0.0)
             group_round_match = re.match(r"^g(\d+)_r(\d+)_", ops[i].id)
             if group_round_match:
                 group_index = int(group_round_match.group(1))

@@ -43,10 +43,10 @@ The current workspace source of truth is `perf_takehome.py`:
 
 | Metric | Value |
 | --- | ---: |
-| Frozen-shape cycles | **983** |
+| Frozen-shape cycles | **982** |
 | Emitted/scheduled IR operations | **12045 / 12045** |
 | Baseline | 147734 |
-| Speedup | **150.29x** |
+| Speedup | **150.44x** |
 | Scratch | **1523 / 1536 words** |
 | Spare scratch | 13 words |
 
@@ -57,9 +57,9 @@ The official suite currently passes:
 
 ```text
 /bin/python3 tests/submission_tests.py
-Ran 9 tests in 3.398s
+Ran 9 tests in 3.376s
 OK
-CYCLES: 983 on all nine executions
+CYCLES: 982 on all nine executions
 ```
 
 The prior VS Code Copilot session store was searched after moving machines. It
@@ -73,7 +73,7 @@ Additional fresh-process validation on 2026-08-12:
 
 ```text
 seeds: 1, 2, 3, 7, 42, 123, 999, 20260811, 20260812
-cycles: 983 for every seed
+cycles: 982 for every seed
 correct: true for every seed
 ops: 12045 complete
 peak scratch: 1523 / 1536
@@ -252,6 +252,22 @@ group-order swap changes which physical work occupies the two-wave schedule's
 critical contexts. The final load now occurs at cycle 971, final VALU at 979,
 and final store at 982.
 
+### 2.4 Final-store drain improvement to 982
+
+At 983 cycles, the final six stores completed as `1+2+2+1` across cycles
+979-982 because groups 26 and 27 did not both finish their final hash combine
+by cycle 978. A narrow operation-ID priority bonus fixes that phase:
+
+```text
+g26_r15_hash5_combine: +15.0
+g27_r15_hash5_combine: +15.0
+```
+
+Both combines now complete at cycle 978. The six dependent stores issue as
+`2+2+2` in cycles 979-981, reducing makespan to 982 without changing emitted
+operations, slot totals, or peak scratch. Targeting either operation alone, or
+using broad group/round/engine bonuses, did not improve the schedule.
+
 ## 3. Active architecture
 
 ### 3.1 SIMD and tiling
@@ -374,7 +390,7 @@ Practical conclusion: a legitimate 900-cycle design most likely needs both:
 2. A factorized lookup that removes at least 14 gather groups without adding a
 	 comparable VALU/ALU/flow cost.
 
-### 4.1 Current 983 roofline
+### 4.1 Current 982 roofline
 
 The integrated scratch-aware SSA compiler has these exact slot totals:
 
@@ -387,11 +403,12 @@ store    38 slots, floor 19
 maximum hard floor: 974 cycles
 ```
 
-The remaining 9-cycle gap above the aggregate floor is now primarily the final
-round's VALU dependency chains plus four cycles of dependent store drain. The
-new lookup policy deliberately trades flow headroom for fewer loads; VALU is
-the hard resource floor. Reaching 900 still requires structural work rather
-than scheduler weights alone.
+The remaining 8-cycle gap above the aggregate floor is now primarily the final
+round's VALU dependency chains. The dependent stores are fully packed at two
+per cycle once their producers finish. The new lookup policy deliberately
+trades flow headroom for fewer loads; VALU is the hard resource floor.
+Reaching 900 still requires structural work rather than scheduler weights
+alone.
 
 ## 5. Optimization progression
 
@@ -438,9 +455,10 @@ Disposable scratch-aware compiler checkpoints:
 	 986  add round-4 lookup groups 16, 26, and 29
 	 985  reverse the three new round-4 lookup paths
 	 983  swap physical groups 5 and 25; nine tests passed
+	 982  prioritize two final hash combines; stores drain 2+2+2
 ```
 
-The 983 result is integrated in the workspace and passes the full official
+The 982 result is integrated in the workspace and passes the full official
 suite.
 
 The main retained improvements are:
@@ -585,6 +603,7 @@ Retained mechanisms:
 | Earlier round-4 lookup expansion | Adding groups 16, 26, and 29 removed 24 late-contending loads and improved 991 to 986. |
 | Per-group early-bit lookup start | Reversing only the three new round-4 lookup paths improved the new schedule to 985. |
 | Context-to-physical-group reassignment | Swapping physical groups 5 and 25 improved 985 to the validated 983 checkpoint. |
+| Exact final-producer priority | Prioritizing only groups 26 and 27 final `hash5_combine` operations packs the six trailing stores into three cycles and improves 983 to 982. |
 
 Important measured dead ends or neutral results:
 
@@ -627,6 +646,12 @@ complete candidates <= 986:   336
 frozen validation:              4 seeds for every <=986 candidate
 best promoted result:          983
 ```
+
+A narrow follow-up from the 983 checkpoint found two independent 982-cycle
+mechanisms: swapping group-order positions 0 and 8, or prioritizing the two
+final producers above. They did not compose to 981. The producer-priority
+variant was retained because it keeps peak scratch at 1523 instead of 1524 and
+directly addresses the final store drain.
 
 Important controls and negative results:
 
@@ -722,14 +747,14 @@ not another priority constant sweep.
 
 ## 8. Prioritized next directions
 
-### Immediate P0: continue from 983 toward 900
+### Immediate P0: continue from 982 toward 900
 
-1. Preserve the validated 983 checkpoint before any further search.
+1. Preserve the validated 982 checkpoint before any further search.
 2. Revisit shared preencoding for depth 6 without duplicating loads or vectors;
 	the successful depth-4 change shows that sharing, not preencoding alone, is
 	the useful abstraction.
-3. Target the 9-cycle gap above the 974 resource floor with final-round VALU
-	chain and dependent-store changes rather than broad priority sweeps.
+3. Target the 8-cycle gap above the 974 resource floor with final-round VALU
+	chain changes rather than broad priority sweeps; store drain is now packed.
 4. Continue nine-operation hash synthesis as the main route toward 900.
 5. Rerun the complete promotion checklist after every workspace change.
 
@@ -867,8 +892,8 @@ These are not runtime dependencies and must not be included in a submission.
 
 Current source of truth:
 
-- `perf_takehome.py`: integrated 983-cycle implementation.
-- `OPTIMIZATION.md`: this research/state log, including 983 validation.
+- `perf_takehome.py`: integrated 982-cycle implementation.
+- `OPTIMIZATION.md`: this research/state log, including 982 validation.
 - `tests/`: unchanged upstream frozen tests.
 
 ## 11. Validation commands
@@ -921,7 +946,7 @@ dynamic allocator and has been removed from this command.
 
 ## 12. Promotion checklist
 
-The integrated 983 checkpoint satisfies all of the following:
+The integrated 982 checkpoint satisfies all of the following:
 
 1. The scheduler emitted every operation and did not print `STUCK`.
 2. The focused frozen-shape test is correct and strictly faster.
